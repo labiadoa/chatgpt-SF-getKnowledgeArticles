@@ -15,7 +15,6 @@ PERIODICITY_SECONDS = PERIODICITY_MINUTES * 60
 
 QUERY = "SELECT ArchivedDate,ArticleCreatedDate,ArticleMasterLanguage,ArticleNumber,ArticleTotalViewCount,CreatedDate,FirstPublishedDate,Id,IsDeleted,IsLatestVersion,VersionNumber,ValidationStatus,IsVisibleInApp,IsVisibleInCsp,IsVisibleInPkb,IsVisibleInPrm,KnowledgeArticleId,Language,LastModifiedById,LastModifiedDate,LastPublishedDate,PublishStatus,RecordTypeId,Answer__c,Question__c,retrievalAPISynced__c,wantSyncRetrievalAPI__c FROM Knowledge__kav WHERE PublishStatus = 'Online'"
 
-
 def fetch_salesforce_data():
     url = f"https://{SF_DOMAIN}.my.salesforce.com/services/data/v57.0/query/?q={QUERY.replace(' ', '+')}"
     headers = {
@@ -24,7 +23,6 @@ def fetch_salesforce_data():
     response = requests.get(url, headers=headers)
     response.raise_for_status()
     return response.json()["records"]
-
 
 def transform_data(records):
     documents = []
@@ -50,7 +48,6 @@ def transform_data(records):
         documents.append(doc)
     return {"documents": documents}
 
-
 def push_data_to_external_api(json_data):
     headers = {
         "Authorization": f"Bearer {UPSERT_BEARER_TOKEN}",
@@ -59,27 +56,39 @@ def push_data_to_external_api(json_data):
     response = requests.post(API_UPSERT_URL + "/upsert", headers=headers, json=json_data)
     response.raise_for_status()
     return response
+
+def log_results(extracted_count, inserted_count, ids):
+    timestamp = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
+    with open("etl_results.log", "a") as log_file:
+        log_file.write(f"{timestamp}\n")
+        log_file.write(f"Artículos extraídos de Salesforce: {extracted_count}\n")
+        log_file.write(f"Artículos insertados en la segunda API: {inserted_count}\n")
+        log_file.write(f"IDs insertados: {', '.join(ids)}\n")
+        log_file.write("========================================\n")
+
 def main():
     while True:
         try:
             records = fetch_salesforce_data()
             transformed_data = transform_data(records)
-            push_data_to_external_api(transformed_data)
+            response = push_data_to_external_api(transformed_data)
+            response_data = response.json()
+            log_results(len(records), len(response_data["ids"]), response_data["ids"])
             print("ETL completado con éxito.")
         except Exception as e:
             print(f"Error en la ETL: {e}")
         time.sleep(PERIODICITY_SECONDS)
 
-
 def run_etl_on_demand():
     try:
         records = fetch_salesforce_data()
         transformed_data = transform_data(records)
-        push_data_to_external_api(transformed_data)
+        response = push_data_to_external_api(transformed_data)
+        response_data = response.json()
+        log_results(len(records), len(response_data["ids"]), response_data["ids"])
         print("ETL bajo demanda completado con éxito.")
     except Exception as e:
         print(f"Error en la ETL bajo demanda: {e}")
-
 
 if __name__ == "__main__":
     import sys
@@ -88,3 +97,4 @@ if __name__ == "__main__":
         run_etl_on_demand()
     else:
         main()
+
