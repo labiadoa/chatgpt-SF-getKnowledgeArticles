@@ -1,100 +1,113 @@
 import os
-import time
 import json
-from dotenv import load_dotenv
+import time
+from datetime import datetime
 import requests
+from simple_salesforce import Salesforce
 
-load_dotenv()
+# Variables de entorno
+SALESFORCE_USERNAME = os.environ["SALESFORCE_USERNAME"]
+SALESFORCE_PASSWORD = os.environ["SALESFORCE_PASSWORD"]
+SALESFORCE_SECURITY_TOKEN = os.environ["SALESFORCE_SECURITY_TOKEN"]
+SALESFORCE_ORG_TYPE = os.environ["SALESFORCE_ORG_TYPE"]
+API_UPSERT_URL = os.environ["API_UPSERT_URL"]
+BEARER_TOKEN_UPSERT = os.environ["BEARER_TOKEN_UPSERT"]
+PERIODICITY_MINUTES = int(os.environ["PERIODICITY_MINUTES"])
+INSERTED_IDS_FILE = "inserted_ids.json"
 
-SF_DOMAIN = os.getenv("SALESFORCE_DOMAIN")
-SF_BEARER_TOKEN = os.getenv("BEARER_TOKEN_SALESFORCE")
-API_UPSERT_URL = os.getenv("API_UPSERT_URL")
-UPSERT_BEARER_TOKEN = os.getenv("BEARER_TOKEN_UPSERT")
-PERIODICITY_MINUTES = int(os.getenv("PERIODICITY_MINUTES"))
-PERIODICITY_SECONDS = PERIODICITY_MINUTES * 60
+# Determinar la URL de autenticación según SALESFORCE_ORG_TYPE
+if SALESFORCE_ORG_TYPE.lower() == "test":
+    SALESFORCE_LOGIN_URL = "https://test.salesforce.com"
+elif SALESFORCE_ORG_TYPE.lower() == "production":
+    SALESFORCE_LOGIN_URL = "https://login.salesforce.com"
+else:
+    raise ValueError("SALESFORCE_ORG_TYPE debe ser 'test' o 'production'")
 
-QUERY = "SELECT ArchivedDate,ArticleCreatedDate,ArticleMasterLanguage,ArticleNumber,ArticleTotalViewCount,CreatedDate,FirstPublishedDate,Id,IsDeleted,IsLatestVersion,VersionNumber,ValidationStatus,IsVisibleInApp,IsVisibleInCsp,IsVisibleInPkb,IsVisibleInPrm,KnowledgeArticleId,Language,LastModifiedById,LastModifiedDate,LastPublishedDate,PublishStatus,RecordTypeId,Answer__c,Question__c,retrievalAPISynced__c,wantSyncRetrievalAPI__c FROM Knowledge__kav WHERE PublishStatus = 'Online'"
+# Conectar a Salesforce
+sf = Salesforce(
+    username=SALESFORCE_USERNAME,
+    password=SALESFORCE_PASSWORD,
+    security_token=SALESFORCE_SECURITY_TOKEN,
+    domain=SALESFORCE_LOGIN_URL
+)
+
+def load_inserted_ids():
+    if os.path.exists(INSERTED_IDS_FILE):
+        with open(INSERTED_IDS_FILE, "r") as file:
+            return json.load(file)
+    return {}
+
+def save_inserted_ids(inserted_ids):
+    with open(INSERTED_IDS_FILE, "w") as file:
+        json.dump(inserted_ids, file)
 
 def fetch_salesforce_data():
-    url = f"https://{SF_DOMAIN}.my.salesforce.com/services/data/v57.0/query/?q={QUERY.replace(' ', '+')}"
-    headers = {
-        "Authorization": f"Bearer {SF_BEARER_TOKEN}"
-    }
-    response = requests.get(url, headers=headers)
-    response.raise_for_status()
-    return response.json()["records"]
+    query = """SELECT ArchivedDate,ArticleCreatedDate,ArticleMasterLanguage,ArticleNumber,ArticleTotalViewCount,CreatedDate,FirstPublishedDate,Id,IsDeleted,IsLatestVersion,VersionNumber,ValidationStatus,IsVisibleInApp,IsVisibleInCsp,IsVisibleInPkb,IsVisibleInPrm,KnowledgeArticleId,Language,LastModifiedById,LastModifiedDate,LastPublishedDate,PublishStatus,RecordTypeId,Answer__c,Question__c,retrievalAPISynced__c,wantSyncRetrievalAPI__c FROM Knowledge__kav WHERE PublishStatus = 'Online'"""
+    result = sf.query_all(query)
+    return result["records"]
 
-def transform_data(records):
+def create_documents(articles, inserted_ids):
     documents = []
-    for record in records:
-        doc = {
-            "id": record["KnowledgeArticleId"],
-            "text": f"Pregunta: {record['Question__c']}. Respuesta: {record['Answer__c']}",
-            "metadata": {
-                "ArticleNumber": record["ArticleNumber"],
-                "Language": record["Language"],
-                "RecordTypeId": record["RecordTypeId"],
-                "Title": record["Title"],
-                "Id": record["Id"],
-                "ArticleCreatedDate": record["ArticleCreatedDate"],
-                "CreatedDate": record["CreatedDate"],
-                "FirstPublishedDate": record["FirstPublishedDate"],
-                "LastModifiedDate": record["LastModifiedDate"],
-                "LastPublishedDate": record["LastPublishedDate"],
-                "ValidationStatus": record["ValidationStatus"],
-                "VersionNumber": record["VersionNumber"]
+    for article in articles:
+        if article["Id"] not in inserted_ids:
+            document = {
+                "id": article["KnowledgeArticleId"],
+                "text": f"Pregunta: {article['Question__c']}. Respuesta: {article['Answer__c']}",
+                "metadata": {
+                    "ArticleNumber": article["ArticleNumber"],
+                    "Language": article["Language"],
+                    "RecordTypeId": article["RecordTypeId"],
+                    "Title": article["Title"],
+                    "Id": article["Id"],
+                    "ArticleCreatedDate": article["ArticleCreatedDate"],
+                    "CreatedDate": article["CreatedDate"],
+                    "FirstPublishedDate": article["FirstPublishedDate"],
+                    "LastModifiedDate": article["LastModifiedDate"],
+                    "LastPublishedDate": article["LastPublishedDate"],
+                    "ValidationStatus": article["ValidationStatus"],
+                    "VersionNumber": article["VersionNumber"]
+                }
             }
-        }
-        documents.append(doc)
-    return {"documents": documents}
+            documents.append(document)
+    return documents
 
-def push_data_to_external_api(json_data):
+def upsert_documents(documents):
     headers = {
-        "Authorization": f"Bearer {UPSERT_BEARER_TOKEN}",
+        "Authorization": f"Bearer {BEARER_TOKEN_UPSERT}",
         "Content-Type": "application/json"
     }
-    response = requests.post(API_UPSERT_URL + "/upsert", headers=headers, json=json_data)
-    response.raise_for_status()
+    response = requests.post(
+        API_UPSERT_URL,
+        headers=headers,
+        json={"documents": documents}
+    )
+
+    if response.status_code != 200:
+        response.raise_for_status()
+
     return response
 
-def log_results(extracted_count, inserted_count, ids):
-    timestamp = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
+def log_results(articles, upsert_response):
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    num_articles_extracted = len(articles)
+    num_articles_inserted = len(upsert_response.json()["ids"])
+
     with open("etl_results.log", "a") as log_file:
-        log_file.write(f"{timestamp}\n")
-        log_file.write(f"Artículos extraídos de Salesforce: {extracted_count}\n")
-        log_file.write(f"Artículos insertados en la segunda API: {inserted_count}\n")
-        log_file.write(f"IDs insertados: {', '.join(ids)}\n")
-        log_file.write("========================================\n")
+        log_file.write(f"{timestamp} - Articles extracted: {num_articles_extracted}, Articles inserted: {num_articles_inserted}\n")
 
-def main():
-    while True:
-        try:
-            records = fetch_salesforce_data()
-            transformed_data = transform_data(records)
-            response = push_data_to_external_api(transformed_data)
-            response_data = response.json()
-            log_results(len(records), len(response_data["ids"]), response_data["ids"])
-            print("ETL completado con éxito.")
-        except Exception as e:
-            print(f"Error en la ETL: {e}")
-        time.sleep(PERIODICITY_SECONDS)
+def run_etl():
+    inserted_ids = load_inserted_ids()
+    articles = fetch_salesforce_data()
+    documents = create_documents(articles, inserted_ids)
+    upsert_response = upsert_documents(documents)
+    log_results(articles, upsert_response)
 
-def run_etl_on_demand():
-    try:
-        records = fetch_salesforce_data()
-        transformed_data = transform_data(records)
-        response = push_data_to_external_api(transformed_data)
-        response_data = response.json()
-        log_results(len(records), len(response_data["ids"]), response_data["ids"])
-        print("ETL bajo demanda completado con éxito.")
-    except Exception as e:
-        print(f"Error en la ETL bajo demanda: {e}")
+    new_inserted_ids = upsert_response.json()["ids"]
+    for article_id, knowledge_article_id in zip([doc["metadata"]["Id"] for doc in documents], new_inserted_ids):
+        inserted_ids[article_id] = knowledge_article_id
+    save_inserted_ids(inserted_ids)
 
 if __name__ == "__main__":
-    import sys
-
-    if len(sys.argv) > 1 and sys.argv[1] == "on_demand":
-        run_etl_on_demand()
-    else:
-        main()
-
+    while True:
+        run_etl()
+        time.sleep(PERIODICITY_MINUTES * 60)
