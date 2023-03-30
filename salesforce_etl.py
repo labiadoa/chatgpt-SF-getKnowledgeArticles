@@ -28,7 +28,7 @@ sf = Salesforce(
     username=SALESFORCE_USERNAME,
     password=SALESFORCE_PASSWORD,
     security_token=SALESFORCE_SECURITY_TOKEN,
-    domain=SALESFORCE_LOGIN_URL
+    sandbox=SALESFORCE_ORG_TYPE.lower() == "test"
 )
 
 def load_inserted_ids():
