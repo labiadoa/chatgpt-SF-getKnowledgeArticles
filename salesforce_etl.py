@@ -9,7 +9,7 @@ from simple_salesforce import Salesforce
 SALESFORCE_USERNAME = os.environ["SALESFORCE_USERNAME"]
 SALESFORCE_PASSWORD = os.environ["SALESFORCE_PASSWORD"]
 SALESFORCE_SECURITY_TOKEN = os.environ["SALESFORCE_SECURITY_TOKEN"]
-SALESFORCE_ORG_TYPE = os.environ["SALESFORCE_ORG_TYPE"]
+SALESFORCE_ORG_TYPE = os.environ["SALESFORCE_ORG_TYPE"] # Posibles valores aceptados: "test" o "production"
 API_UPSERT_URL = os.environ["API_UPSERT_URL"]
 BEARER_TOKEN_UPSERT = os.environ["BEARER_TOKEN_UPSERT"]
 PERIODICITY_MINUTES = int(os.environ["PERIODICITY_MINUTES"])
